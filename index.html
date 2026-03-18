@@ -24,6 +24,96 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'GLTFLoader';
 import { OrbitControls } from 'OrbitControls';
 
+function getPointerPos(e) {
+  if (e.touches && e.touches.length > 0) {
+    return {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY
+    };
+  } else {
+    return {
+      x: e.clientX,
+      y: e.clientY
+    };
+  }
+}
+
+function onPointerDown(e) {
+  const pos = getPointerPos(e);
+
+  mouse.x = (pos.x / window.innerWidth) * 2 - 1;
+  mouse.y = -(pos.y / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(boneHandles);
+
+  if (intersects.length > 0) {
+    selectedBone = intersects[0].object.boneRef;
+
+    plane.setFromNormalAndCoplanarPoint(
+      camera.getWorldDirection(new THREE.Vector3()),
+      selectedBone.getWorldPosition(new THREE.Vector3())
+    );
+
+    raycaster.ray.intersectPlane(plane, dragOffset);
+    const boneWorldPos = selectedBone.getWorldPosition(new THREE.Vector3());
+    dragOffset.sub(boneWorldPos);
+
+    controls.enabled = false;
+  }
+}
+
+function onPointerMove(e) {
+  if (!selectedBone) return;
+
+  const pos = getPointerPos(e);
+
+  mouse.x = (pos.x / window.innerWidth) * 2 - 1;
+  mouse.y = -(pos.y / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+
+  const targetWorld = new THREE.Vector3();
+  raycaster.ray.intersectPlane(plane, targetWorld);
+  targetWorld.sub(dragOffset);
+
+  const parent = selectedBone.parent;
+  if (!parent) return;
+
+  const parentPos = new THREE.Vector3();
+  parent.getWorldPosition(parentPos);
+
+  const currentTip = selectedBone.getWorldPosition(new THREE.Vector3());
+
+  const newDir = targetWorld.clone().sub(parentPos).normalize();
+  const oldDir = currentTip.clone().sub(parentPos).normalize();
+
+  const axis = new THREE.Vector3().crossVectors(oldDir, newDir).normalize();
+  const angle = Math.acos(THREE.MathUtils.clamp(oldDir.dot(newDir), -1, 1));
+
+  if (axis.lengthSq() > 1e-6 && angle > 1e-6) {
+    const quat = new THREE.Quaternion();
+    quat.setFromAxisAngle(axis, angle);
+
+    const parentWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
+    parentWorldQuat.premultiply(quat);
+
+    if (parent.parent) {
+      const parentInv = parent.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      parent.quaternion.copy(parentWorldQuat.premultiply(parentInv));
+    } else {
+      parent.quaternion.copy(parentWorldQuat);
+    }
+  }
+}
+
+function onPointerUp() {
+  selectedBone = null;
+  controls.enabled = true;
+}
+
+
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xeeeeee);
 
@@ -143,82 +233,15 @@ let offset = new THREE.Vector3();
 
 const dragOffset = new THREE.Vector3();
 
-window.addEventListener('mousedown', e => {
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+// マウス
+window.addEventListener('mousedown', onPointerDown);
+window.addEventListener('mousemove', onPointerMove);
+window.addEventListener('mouseup', onPointerUp);
 
-  raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(boneHandles);
-  if (intersects.length > 0) {
-    selectedBone = intersects[0].object.boneRef;
-
-    // 平面をカメラ方向で作る
-    plane.setFromNormalAndCoplanarPoint(
-      camera.getWorldDirection(new THREE.Vector3()),
-      selectedBone.getWorldPosition(new THREE.Vector3())
-    );
-
-    // マウスのワールド位置に対するオフセット
-    raycaster.ray.intersectPlane(plane, dragOffset);
-    const boneWorldPos = selectedBone.getWorldPosition(new THREE.Vector3());
-    dragOffset.sub(boneWorldPos);
-
-    controls.enabled = false;
-  }
-});
-
-window.addEventListener('mousemove', e => {
-  if (!selectedBone) return;
-
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-
-  const targetWorld = new THREE.Vector3();
-  raycaster.ray.intersectPlane(plane, targetWorld);
-  targetWorld.sub(dragOffset); // オフセット補正
-
-  const parent = selectedBone.parent;
-  if (!parent) return;
-
-  // 親ボーンのワールド位置
-  const parentPos = new THREE.Vector3();
-  parent.getWorldPosition(parentPos);
-
-  // 掴んだボーン先端の現在位置（ワールド座標）
-  const currentTip = selectedBone.getWorldPosition(new THREE.Vector3());
-
-  // 新しい方向ベクトル
-  const newDir = targetWorld.clone().sub(parentPos).normalize();
-  const oldDir = currentTip.clone().sub(parentPos).normalize();
-
-  // 回転軸・角度を計算
-  const axis = new THREE.Vector3().crossVectors(oldDir, newDir).normalize();
-  const angle = Math.acos(THREE.MathUtils.clamp(oldDir.dot(newDir), -1, 1));
-
-  if (axis.lengthSq() > 1e-6 && angle > 1e-6) {
-    const quat = new THREE.Quaternion();
-    quat.setFromAxisAngle(axis, angle);
-
-    // 親ボーンのワールド回転に適用
-    const parentWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-    parentWorldQuat.premultiply(quat);
-
-    // ワールド→ローカル回転
-    if (parent.parent) {
-      const parentInv = parent.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
-      parent.quaternion.copy(parentWorldQuat.premultiply(parentInv));
-    } else {
-      parent.quaternion.copy(parentWorldQuat);
-    }
-  }
-
-});
-
-window.addEventListener('mouseup', () => {
-  selectedBone = null;
-  controls.enabled = true;
-});
+// タッチ
+window.addEventListener('touchstart', onPointerDown, { passive: false });
+window.addEventListener('touchmove', onPointerMove, { passive: false });
+window.addEventListener('touchend', onPointerUp);
 
 // アニメーションループ
 const clock = new THREE.Clock();
